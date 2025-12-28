@@ -132,6 +132,7 @@ export default function KanbanBoard() {
               url: item.url,
               author: item.author,
               date: item.date,
+              label: item.label,
               profile_order: item.profile_order,
               type: item.type
             };
@@ -248,7 +249,6 @@ export default function KanbanBoard() {
           url: item.url,
           author: item.author,
           label: item.label,
-
           date: item.date,
           profile_order: item.profile_order,
           type: item.type
@@ -337,8 +337,8 @@ export default function KanbanBoard() {
                       <input
                         className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="Label"
-                        value={editForm.label}
-                        onChange={(e) => setEditForm({ ...editForm, label: e.target.value || "" })}
+                        value={editForm.label ?? ''}
+                        onChange={(e) => setEditForm({ ...editForm, label: e.target.value  })}
                       />
                       <input
                         className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -433,8 +433,8 @@ export default function KanbanBoard() {
                 <input
                   className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="Label"
-                  value={form.label}
-                  onChange={(e) => setForm({ ...form, label: e.target.value || "" })}
+                  value={form.label ?? ''}
+                  onChange={(e) => setForm({ ...form, label: e.target.value })}
                 />
                 <input
                   className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"

@@ -20,6 +20,8 @@ export type ProfileVideo = {
   date: number;
   profile_order: number;
   type: string;
+  label: string;
+  
 };
 
 /* READ */
