@@ -1,475 +1,314 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  getProfileVideos,
-  upsertProfileVideos,
-  deleteProfileVideo
+  getCmsAboutPayload,
+  getCmsContactPayload,
+  getSiteData,
+  saveSiteDataTab,
+  type AdminTab,
 } from "./supabase";
-import { v4 as uuidv4 } from "uuid";
+import type { SiteData } from "@/lib/siteData";
+import { defaultSiteData } from "@/lib/siteData";
+import { debounce } from "@/lib/debounce";
 
-type VideoCard = {
-  id?: string;
-  project_id: string;
-  title: string;
-  url: string;
-  author: string;
-  date: number;
-  label: string;
-  type: string;
-  profile_order: number;
-};
+/** @dnd-kit generates aria-describedby ids that differ SSR vs client — load DnD only in the browser. */
+const dndLoading = (
+  <div className="py-8 text-sm text-gray-500">載入中…</div>
+);
 
-type Dragging = { col: string; index: number } | null;
+const VideoUrlSection = dynamic(
+  () =>
+    import("./components/VideoUrlSection").then((m) => m.VideoUrlSection),
+  { ssr: false, loading: () => dndLoading }
+);
 
-const COLS = [
-  { key: "TELEVISION", title: "TELEVISION", color: "bg-orange-500" },
-  { key: "COMMERCIAL", title: "COMMERCIAL", color: "bg-red-500" },
-  { key: "MUSIC", title: "MUSIC", color: "bg-teal-500" },
-  { key: "OTHER", title: "OTHER", color: "bg-green-500" },
-  { key: "DRBEAUTY", title: "DRBEAUTY", color: "bg-gray-500" },
-  { key: "HOMEPAGE", title: "HOMEPAGE", color: "bg-purple-500" },
-  { key: "ABOUTUS", title: "ABOUTUS", color: "bg-pink-500" },
-  { key: "CONTACT", title: "CONTACT", color: "bg-yellow-500" },
-];
+const MemberDataSection = dynamic(
+  () =>
+    import("./components/MemberDataSection").then((m) => m.MemberDataSection),
+  { ssr: false, loading: () => dndLoading }
+);
 
-const emptyForm = {
-  title: "",
-  url: "",
-  author: "",
-  label: "",
-  date: new Date().getFullYear()
-};
+const DrBeautySection = dynamic(
+  () =>
+    import("./components/DrBeautySection").then((m) => m.DrBeautySection),
+  { ssr: false, loading: () => dndLoading }
+);
 
-export default function KanbanBoard() {
-  const [data, setData] = useState<Record<string, VideoCard[]>>({
-    TELEVISION: [],
-    COMMERCIAL: [],
-    MUSIC: [],
-    OTHER: [],
-    DRBEAUTY: [],
-    HOMEPAGE: [],
-    ABOUTUS: [],
-    CONTACT: []
-  });
-  const [addingCol, setAddingCol] = useState<string | null>(null);
-  const [form, setForm] = useState(emptyForm);
-  const [dragging, setDragging] = useState<Dragging>(null);
-  const [dragOverItem, setDragOverItem] = useState<number | null>(null);
-  const [editing, setEditing] = useState<{ col: string; index: number } | null>(null);
-  const [editForm, setEditForm] = useState(emptyForm);
-  const [status, setStatus] = useState<"idle"|"saving"|"saved"|"error">("idle");
-  const [selectedPage, setSelectedPage] = useState<'all'|'profile'|'drbeauty'|'contact'|'homepage'|'aboutus'>('all');
-  const visibleCols = useMemo(() => {
-    if (selectedPage === 'profile') {
-      const allowed = new Set(['COMMERCIAL', 'TELEVISION', 'MUSIC', 'OTHER']);
-      return COLS.filter((c) => allowed.has(c.key));
-    }
-    if (selectedPage === 'drbeauty') return COLS.filter((c) => c.key === 'DRBEAUTY');
-    if (selectedPage === 'contact') return COLS.filter((c) => c.key === 'CONTACT');
-    if (selectedPage === 'aboutus') return COLS.filter((c) => c.key === 'ABOUTUS');
-    if (selectedPage === 'homepage') return COLS.filter((c) => c.key === 'HOMEPAGE');
-    return COLS;
-  }, [selectedPage]);
-  
-  // ----- Fetch initial data -----
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        const rows = await getProfileVideos();
-        const grouped: Record<string, VideoCard[]> = {
-          TELEVISION: [],
-          COMMERCIAL: [],
-          MUSIC: [],
-          OTHER: [],
-          DRBEAUTY: [],
-          HOMEPAGE: [],
-          ABOUTUS: [],  
-          CONTACT: []
-        };
-        rows.forEach((r) => {
-          const type = r.type ?? "OTHER";
-          grouped[type].push({ ...r, profile_order: r.profile_order });
-        });
-        Object.keys(grouped).forEach((k) => {
-          grouped[k].sort((a,b)=> a.profile_order - b.profile_order);
-        });
-        setData(grouped);
-      } catch(e) {
-        console.error("Fetch error:", e);
-      }
+const ProfiloBoard = dynamic(
+  () => import("./components/ProfiloBoard").then((m) => m.ProfiloBoard),
+  { ssr: false, loading: () => dndLoading }
+);
+
+export default function SiteDataAdminPage() {
+  const [siteData, setSiteData] = useState<SiteData>(() =>
+    structuredClone(defaultSiteData)
+  );
+  const [tab, setTab] = useState<AdminTab>("profilo");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [status, setStatus] = useState<
+    "idle" | "loading" | "saving" | "saved" | "error"
+  >("loading");
+
+  const debouncedByTab = useMemo(() => {
+    const wrap = (t: AdminTab) =>
+      debounce((data: SiteData) => {
+        setSaveError(null);
+        setStatus("saving");
+        saveSiteDataTab(t, data)
+          .then(() => {
+            setStatus("saved");
+            setTimeout(() => setStatus("idle"), 1200);
+          })
+          .catch((e) => {
+            console.error(e);
+            const msg = e instanceof Error ? e.message : String(e);
+            setSaveError(msg);
+            setStatus("error");
+          });
+      }, 900);
+    return {
+      home: wrap("home"),
+      about: wrap("about"),
+      members: wrap("members"),
+      contact: wrap("contact"),
+      drbeauty: wrap("drbeauty"),
+      profilo: wrap("profilo"),
     };
-    fetch();
   }, []);
 
-  // ----- Helpers -----
-  const normalizeOrders = (list: VideoCard[]) =>
-    list.map((item, i) => ({ ...item, profile_order: i }));
-
-  const getYouTubeID = (url: string) => {
-    const reg = /(?:youtube\.com\/.*v=|youtu\.be\/)([^&]+)/;
-    const match = url.match(reg);
-    return match ? match[1] : null;
-  };
-
-  const debounce = (fn: Function, delay = 800) => {
-    let timer: any;
-    return (...args: any[]) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => fn(...args), delay);
-    };
-  };
-
-  const debouncedSave = useRef(
-    debounce(async (nextData: typeof data) => {
-      setStatus("saving");
-      try {
-        const insertData = COLS.flatMap((c) =>
-          nextData[c.key].map((item) => {
-            const base = {
-              project_id: item.project_id,
-              title: item.title,
-              url: item.url,
-              author: item.author,
-              date: item.date,
-              label: item.label,
-              profile_order: item.profile_order,
-              type: item.type
-            };
-            return item.id ? { id: item.id, ...base } : base;
-          })
-        );
-        const res = await upsertProfileVideos(insertData);
-        // update IDs for newly inserted cards
-        const updatedRows: VideoCard[] = res;
-        const newData: Record<string, VideoCard[]> = { ...nextData };
-        updatedRows.forEach((r) => {
-          const type = r.type ?? "OTHER";
-          const index = newData[type].findIndex(c => c.project_id === r.project_id);
-          if (index !== -1) {
-            newData[type][index] = { ...r };
-          }
-        });
-        setData(newData);
-        setStatus("saved");
-        setTimeout(()=>setStatus("idle"), 1200);
-      } catch(e) {
-        console.error("Save error:", e);
-        setStatus("error");
-      }
-    }, 1000)
-  ).current;
-
-  // ----- Drag -----
-  const onDrop = (targetCol: string) => {
-    if (!dragging) return;
-    const { col, index } = dragging;
-
-    if (col === targetCol && dragOverItem !== null) {
-      const list = [...data[col]];
-      const [moved] = list.splice(index, 1);
-      list.splice(dragOverItem, 0, moved);
-      const nextData = { ...data, [col]: normalizeOrders(list) };
-      setData(nextData);
-      debouncedSave(nextData);
-    }
-
-    if (col !== targetCol) {
-      const source = [...data[col]];
-      const [moved] = source.splice(index, 1);
-      const target = [...data[targetCol], { ...moved, type: targetCol }];
-      const nextData = {
-        ...data,
-        [col]: normalizeOrders(source),
-        [targetCol]: normalizeOrders(target)
-      };
-      setData(nextData);
-      debouncedSave(nextData);
-    }
-
-    setDragging(null);
-    setDragOverItem(null);
-  };
-
-  // ----- Add -----
-  const addCard = async (col: string) => {
-    if (!form.title) return;
-    const newCard: VideoCard = {
-      project_id: uuidv4(),
-      title: form.title,
-      url: form.url,
-      label: form.label,
-      author: form.author,
-      date: form.date,
-      type: col,
-      profile_order: data[col].length
-    };
-    try {
-      // 立即上傳拿回 id
-      const [saved] = await upsertProfileVideos([newCard]);
-      const nextData = {
-        ...data,
-        [col]: normalizeOrders([...data[col], saved])
-      };
-      setData(nextData);
-      setForm(emptyForm);
-      setAddingCol(null);
-    } catch(e) {
-      console.error("Add error:", e);
-      alert("新增失敗");
-    }
-  };
-
-  // ----- Delete -----
-  const removeCard = async (col: string, index: number) => {
-    const card = data[col][index];
-    if (card.id) {
-      try {
-        await deleteProfileVideo(card.id);
-      } catch(e) {
-        console.error("Delete error:", e);
-        alert("刪除失敗");
-        return;
+  function tabForSiteDataKey(key: keyof SiteData): AdminTab | null {
+    switch (key) {
+      case "homeVideos":
+        return "home";
+      case "aboutVideos":
+        return "about";
+      case "memberData":
+        return "members";
+      case "drBeautyVideos":
+        return "drbeauty";
+      case "profilo":
+        return "profilo";
+      case "contactVideos":
+        return "contact";
+      default: {
+        const _u: never = key;
+        return _u;
       }
     }
-    const list = [...data[col]];
-    list.splice(index, 1);
-    const nextData = { ...data, [col]: normalizeOrders(list) };
-    setData(nextData);
-    debouncedSave(nextData);
-  };
+  }
 
-  // ----- Save All -----
-  const saveAll = async () => {
-    const insertData = COLS.flatMap((c) =>
-      data[c.key].map((item) => {
-        const base = {
-          project_id: item.project_id,
-          title: item.title,
-          url: item.url,
-          author: item.author,
-          label: item.label,
-          date: item.date,
-          profile_order: item.profile_order,
-          type: item.type
-        };
-        return item.id ? { id: item.id, ...base } : base;
+  useEffect(() => {
+    let cancelled = false;
+    getSiteData()
+      .then((data) => {
+        if (!cancelled) {
+          setSiteData(data);
+          setLoadError(null);
+          setStatus("idle");
+        }
       })
-    );
+      .catch((e) => {
+        console.error(e);
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setLoadError(
+            `無法載入 CMS 資料，已顯示預設內容。${msg ? `（${msg}）` : ""}`
+          );
+          setSiteData(structuredClone(defaultSiteData));
+          setStatus("idle");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** About / Members：只與 `cms_about` 同步；Contact：只與 `cms_contact` 同步。 */
+  useEffect(() => {
+    if (tab !== "about" && tab !== "members" && tab !== "contact") return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        if (tab === "contact") {
+          const ct = await getCmsContactPayload();
+          if (cancelled) return;
+          setSiteData((prev) => ({
+            ...prev,
+            contactVideos: ct.contactVideos,
+          }));
+        } else {
+          const ab = await getCmsAboutPayload();
+          if (cancelled) return;
+          setSiteData((prev) => ({
+            ...prev,
+            aboutVideos: ab.aboutVideos,
+            memberData: ab.memberData,
+          }));
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  function update<K extends keyof SiteData>(key: K, value: SiteData[K]) {
+    setSiteData((prev) => {
+      const next = { ...prev, [key]: value };
+      const t = tabForSiteDataKey(key);
+      if (t) debouncedByTab[t](next);
+      return next;
+    });
+  }
+
+  async function saveNow() {
+    setSaveError(null);
+    setStatus("saving");
     try {
-      await upsertProfileVideos(insertData);
-      alert("儲存完成");
-    } catch(e) {
-      console.error("Save all error:", e);
-      alert("儲存失敗");
+      await saveSiteDataTab(tab, siteData);
+      setStatus("saved");
+      setTimeout(() => setStatus("idle"), 1200);
+    } catch (e) {
+      console.error(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveError(msg);
+      setStatus("error");
     }
-  };
-  // ----- Render -----
+  }
+
   return (
-    <div className="max-w-7xl mx-auto px-4 md:px-8 py-8">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
-        <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">
-          我的檔期
-        </h2>
-        <select value={selectedPage} onChange={(e) => setSelectedPage(e.target.value as 'all'|'profile'|'drbeauty'|'contact'|'homepage'|'aboutus')} className="border border-gray-300 rounded-lg px-3 py-2 text-sm md:text-base focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <option value='all'>ALL</option>
-          <option value='profile'>Profile</option>
-          <option value='drbeauty'>DR.BEAUTY</option>
-          <option value='contact'>Contact</option>
-          <option value='homepage'>Homepage</option>
-          <option value='aboutus'>About Us</option>
-        </select>
-        <div className="flex items-center gap-3">
-          {status === "saving" && <span className="text-sm text-gray-500">Saving...</span>}
-          {status === "saved" && <span className="text-sm text-green-500">Saved!</span>}
-          {status === "error" && <span className="text-sm text-red-500">Error!</span>}
-          <button
-            onClick={saveAll}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2
-              bg-blue-600 hover:bg-blue-700 text-white rounded-lg
-              shadow-sm transition text-sm md:text-base"
-          >
-            💾 儲存全部
-          </button>
-        </div>
+    <div className="flex min-h-dvh flex-col md:h-screen md:overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl shrink-0 px-4 pt-8 md:px-8">
+        <header className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+              SiteData 後台
+            </h1>
+            <p className="mt-1 text-sm text-gray-500">
+              About／Members 讀寫 <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">cms_about</code>
+              ；Contact 讀寫 <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">cms_contact</code>
+              。切換至該分頁會向對應表重新 GET 最新資料。
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {status === "loading" && (
+              <span className="text-sm text-gray-500">載入中…</span>
+            )}
+            {status === "saving" && (
+              <span className="text-sm text-gray-500">儲存中…</span>
+            )}
+            {status === "saved" && (
+              <span className="text-sm text-green-600">已儲存</span>
+            )}
+          {status === "error" && (
+            <span className="max-w-md truncate text-sm text-red-600" title={saveError ?? ""}>
+              儲存失敗{saveError ? `：${saveError}` : ""}
+            </span>
+          )}
+            <button
+              type="button"
+              onClick={saveNow}
+              className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700"
+            >
+              立即儲存
+            </button>
+          </div>
+        </header>
+
+        {loadError ? (
+          <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {loadError}
+          </p>
+        ) : null}
+
+        <nav className="mb-8 flex flex-wrap gap-2 border-b border-gray-200 pb-2">
+          {(
+            [
+              ["home", "Homepage"],
+              ["about", "About"],
+              ["members", "Members"],
+              ["contact", "Contact"],
+              ["drbeauty", "DR.BEAUTY"],
+              ["profilo", "Profilo"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                tab === key
+                  ? "bg-gray-900 text-white"
+                  : "text-gray-600 hover:bg-gray-100"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
       </div>
 
-      {/* Board */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        {visibleCols.map((col) => (
-          <div
-            key={col.key}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={() => onDrop(col.key)}
-            className="bg-gray-50 rounded-2xl p-4 flex flex-col border border-gray-200 min-h-[320px]"
-          >
-            {/* Column Header */}
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="flex items-center gap-2 font-semibold text-sm uppercase tracking-wide">
-                <span className={`w-2.5 h-2.5 rounded-full ${col.color}`} />
-                {col.title}
-              </h3>
-              <span className="text-xs text-gray-400">{data[col.key].length}</span>
-            </div>
+      <div className="mx-auto min-h-0 w-full max-w-7xl flex-1 overflow-y-auto px-4 pb-8 md:px-8">
+      {tab === "home" && (
+        <div className="w-full md:mx-auto md:max-w-[500px]">
+          <VideoUrlSection
+            title="Homepage 影片（homeVideos）"
+            items={siteData.homeVideos}
+            onChange={(items) => update("homeVideos", items)}
+          />
+        </div>
+      )}
 
-            {/* Cards */}
-            <div className="flex-1 space-y-3">
-              {data[col.key].map((item, i) => (
-                <div
-                  key={item.id ?? i}
-                  draggable
-                  onDragStart={() => setDragging({ col: col.key, index: i })}
-                  onDragOver={() => setDragOverItem(i)}
-                  className={`relative group bg-white p-4 rounded-xl shadow-sm hover:shadow-md transition cursor-move
-                    ${dragging?.col === col.key && dragging?.index === i ? "opacity-50 scale-95" : ""}
-                    ${dragOverItem === i && dragging?.col === col.key ? "ring-2 ring-blue-400" : ""}`}
-                >
-                  {/* Inline Edit */}
-                  {editing?.col === col.key && editing?.index === i ? (
-                    <div className="space-y-2">
-                      <input
-                        className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Title"
-                        value={editForm.title}
-                        onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-                      />
-                      <input
-                        className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Label"
-                        value={editForm.label ?? ''}
-                        onChange={(e) => setEditForm({ ...editForm, label: e.target.value  })}
-                      />
-                      <input
-                        className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Date"
-                        type="number"
-                        value={editForm.date}
-                        onChange={(e) => setEditForm({ ...editForm, date:  Number(e.target.value) })}
-                      />
-                      <input
-                        className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="URL"
-                        value={editForm.url}
-                        onChange={(e) => setEditForm({ ...editForm, url: e.target.value })}
-                      />
-                      <input
-                        className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Author"
-                        value={editForm.author}
-                        onChange={(e) => setEditForm({ ...editForm, author: e.target.value })}
-                      />
-                      <div className="flex gap-2 pt-1">
-                        <button
-                          onClick={() => {
-                            const list = [...data[col.key]];
-                            list[i] = { ...list[i], ...editForm };
-                            const nextData = { ...data, [col.key]: list };
-                            setData(nextData);
-                            setEditing(null);
-                            debouncedSave(nextData);
-                          }}
-                          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm py-1.5 rounded-lg"
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          onClick={() => setEditing(null)}
-                          className="flex-1 bg-gray-100 hover:bg-gray-200 text-sm py-1.5 rounded-lg"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex items-center">
-                        {item.url && getYouTubeID(item.url) && (
-                          <div className="w-full">
-                            <img
-                              src={`https://img.youtube.com/vi/${getYouTubeID(item.url)}/0.jpg`}
-                              alt="YouTube thumbnail"
-                              className="mt-2 rounded-lg w-full object-cover"
-                            />
-                          </div>
-                        )}
-                        <div className="flex flex-col flex-grow ml-3 w-70">
-                          <div className="font-medium text-sm">{item.title}</div>
-                          <div className="text-xs text-gray-500 mt-1">{item.author} · {item.date}</div>
-                        </div>
-                      </div>
-                      <div className="flex justify-between mt-2">
-                        <button
-                          onClick={() => {
-                            setEditing({ col: col.key, index: i });
-                            setEditForm(item);
-                          }}
-                          className="text-xs text-blue-500 hover:underline"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => removeCard(col.key, i)}
-                          className="text-xs text-red-500 hover:underline"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
+      {tab === "about" && (
+        <div className="w-full md:mx-auto md:max-w-[500px]">
+          <VideoUrlSection
+            title="About 影片（aboutVideos）"
+            items={siteData.aboutVideos}
+            onChange={(items) => update("aboutVideos", items)}
+          />
+        </div>
+      )}
 
-            {/* Add Card */}
-            {addingCol === col.key ? (
-              <div className="mt-4 bg-white rounded-xl p-4 shadow-md space-y-2">
-                <input
-                  className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Title"
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                />
-                <input
-                  className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Label"
-                  value={form.label ?? ''}
-                  onChange={(e) => setForm({ ...form, label: e.target.value })}
-                />
-                <input
-                  className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Date"
-                  type="number"
-                  value={form.date}
-                  onChange={(e) => setForm({ ...form, date:  Number(e.target.value) })}
-                />
-                <input
-                  className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="URL"
-                  value={form.url}
-                  onChange={(e) => setForm({ ...form, url: e.target.value })}
-                />
-                <input
-                  className="w-full p-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Author"
-                  value={form.author}
-                  onChange={(e) => setForm({ ...form, author: e.target.value })}
-                />
-                <div className="flex gap-2 pt-2">
-                  <button onClick={() => addCard(col.key)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm py-2 rounded-lg">Confirm</button>
-                  <button onClick={() => setAddingCol(null)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-sm py-2 rounded-lg">Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setAddingCol(col.key)}
-                className="mt-4 text-sm text-gray-500 hover:text-gray-800 transition self-start"
-              >
-                + Add card
-              </button>
-            )}
-          </div>
-        ))}
+      {tab === "members" && (
+        <div className="w-full md:mx-auto md:max-w-[500px]">
+          <MemberDataSection
+            items={siteData.memberData}
+            onChange={(items) => update("memberData", items)}
+          />
+        </div>
+      )}
+
+      {tab === "contact" && (
+        <div className="w-full md:mx-auto md:max-w-[500px]">
+          <VideoUrlSection
+            title="Contact 影片（contactVideos）"
+            items={siteData.contactVideos}
+            onChange={(items) => update("contactVideos", items)}
+          />
+        </div>
+      )}
+
+      {tab === "drbeauty" && (
+        <div className="w-full md:mx-auto md:max-w-[500px]">
+          <DrBeautySection
+            items={siteData.drBeautyVideos}
+            onChange={(items) => update("drBeautyVideos", items)}
+          />
+        </div>
+      )}
+
+      {tab === "profilo" && (
+        <ProfiloBoard
+          profilo={siteData.profilo}
+          onChange={(nextProfilo) => update("profilo", nextProfilo)}
+        />
+      )}
       </div>
     </div>
   );
