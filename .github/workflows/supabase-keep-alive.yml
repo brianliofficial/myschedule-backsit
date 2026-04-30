@@ -1,40 +1,78 @@
 
 name: Supabase Keep Alive
 
+# Wakes free-tier Supabase projects (avoids pause after inactivity). Requires
+# repository secrets:
+#   - SUPABASE_ANON_KEY  (Dashboard → Settings → API → anon public)
+# Either:
+#   - SUPABASE_URL       e.g. https://<project-ref>.supabase.co (no trailing slash)
+# Or:
+#   - SUPABASE_PROJECT_REF  project ref only, e.g. fmnzrltnwbqdkrktlfbn (URL built automatically)
+
 on:
   schedule:
-    # Daily UTC 09:00 (~ Taiwan 17:00)
-    - cron: '0 9 * * *'
+    # Every 8 hours UTC — reduces risk if a single cron run is delayed/skipped.
+    - cron: "20 */8 * * *"
+    # Secondary slot for redundancy (distinct minute offset).
+    - cron: "50 2,14 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: supabase-keep-alive-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase (read cms_index — matches multi-table CMS)
+      - name: Ping Supabase (read cms_* — multi-table CMS)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
-            echo "Missing SUPABASE_URL or SUPABASE_ANON_KEY in repository secrets."
+          BASE="${SUPABASE_URL:-}"
+          if [ -z "${BASE}" ] && [ -n "${SUPABASE_PROJECT_REF:-}" ]; then
+            BASE="https://${SUPABASE_PROJECT_REF}.supabase.co"
+          fi
+          if [ -z "${BASE:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
+            echo "Missing secrets: set SUPABASE_ANON_KEY and either SUPABASE_URL or SUPABASE_PROJECT_REF."
             exit 1
           fi
-          BASE="${SUPABASE_URL%/}"
-          # Public SELECT on cms_* per supabase/cms_tables.sql; wakes project + verifies CMS table exists
-          RESPONSE=$(curl -sS -w "\n%{http_code}" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
-            -H "Accept: application/json" \
-            "${BASE}/rest/v1/cms_index?select=id&limit=1")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-          echo "HTTP Status: $HTTP_CODE"
-          echo "Body (truncated): $(echo "$BODY" | head -c 200)"
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-            echo "OK Supabase project reachable; cms_index query succeeded"
-          else
-            echo "Unexpected response. Check SUPABASE_URL, SUPABASE_ANON_KEY, and that cms_tables.sql has been applied."
+          BASE="${BASE%/}"
+
+          ping_table() {
+            local table="$1"
+            local RESPONSE
+            RESPONSE=$(curl -sS -w "\n%{http_code}" --retry 3 --retry-delay 8 \
+              -H "apikey: ${SUPABASE_ANON_KEY}" \
+              -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+              -H "Accept: application/json" \
+              "${BASE}/rest/v1/${table}?select=id&limit=1")
+            local HTTP_CODE
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            local BODY
+            BODY=$(echo "$RESPONSE" | sed '$d')
+            echo "Table ${table} — HTTP Status: ${HTTP_CODE}"
+            echo "Body (truncated): $(echo "$BODY" | head -c 200)"
+            if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+              return 0
+            fi
+            return 1
+          }
+
+          failed=0
+          for tbl in cms_index cms_contact; do
+            ping_table "${tbl}" || failed=1
+          done
+
+          if [ "${failed}" -eq 1 ]; then
+            echo "::error::Ping failed — verify SUPABASE_URL or SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, RLS anon SELECT on cms_*, and that cms_tables.sql was applied."
             exit 1
           fi
+
+          echo "OK — Supabase reachable; waking queries succeeded"
